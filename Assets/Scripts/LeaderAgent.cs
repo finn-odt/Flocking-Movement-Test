@@ -17,7 +17,9 @@ public class LeaderAgent : MonoBehaviour
     [SerializeField] private float spawnRadius = 6.0f;
     [SerializeField] private bool spawnOnSphere = false;
     [SerializeField] private int numberOfAgents = 10;
-        
+
+    [SerializeField] private Flock defaultFlock = new();
+    
     private readonly List<Rigidbody> agents = new();
     private readonly List<int> agentFlockIds = new();
     private readonly List<Flock> controlledFlocks = new();
@@ -35,7 +37,7 @@ public class LeaderAgent : MonoBehaviour
     
     void Start()
     {
-        controlledFlocks.Add(new Flock());
+        controlledFlocks.Add(defaultFlock);
         
         for (int i = 0; i < numberOfAgents; i++)
         {
