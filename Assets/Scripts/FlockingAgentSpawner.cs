@@ -27,11 +27,6 @@ public class FlockingAgentSpawner : MonoBehaviour
                 o.transform.position = initPos;
                 agents.Add(o.transform);
                 FlockingAgent f = o.GetComponent<FlockingAgent>();
-                f.flockLeader = flockLeader;
-                f.leaderRb = flockLeaderRB;
-                f.flock = controlledFlocks[0];
-                
-                controlledFlocks[0].members.Add(o.transform);  // populate list of all flock-members
             }
         }
     }
@@ -56,34 +51,7 @@ public class FlockingAgentSpawner : MonoBehaviour
                 o.transform.position = initPos;
                 agents.Add(o.transform);
                 FlockingAgent f = o.GetComponent<FlockingAgent>();
-                f.flockLeader = flockLeader;
-                f.leaderRb = flockLeaderRB;
-                f.flock = controlledFlocks[1];
-                f.flock.leaderAttractionWeight = 0.6f;
-                f.flock.alignmentWeight = 1.3f;
-                f.flock.cohesionWeight = 0.1f;
-                
-                controlledFlocks[1].members.Add(o.transform);  // populate list of all flock-members
             }
         }
-    }
-
-    public void Group()
-    {
-        if (!isSplit)
-            return;
-
-        foreach(Transform agent in controlledFlocks[1].members)
-        {
-            FlockingAgent f = agent.gameObject.GetComponent<FlockingAgent>();
-            f.flockLeader = flockLeader;
-            f.leaderRb = flockLeaderRB;
-            f.flock = controlledFlocks[0];
-            controlledFlocks[0].members.Add(agent);
-        }
-
-        controlledFlocks.RemoveAt(1);
-            
-        isSplit = false;
     }
 }

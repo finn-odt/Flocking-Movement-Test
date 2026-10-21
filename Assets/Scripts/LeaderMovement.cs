@@ -9,6 +9,9 @@ public class LeaderMovement : MonoBehaviour
     private Vector2 moveInput;
 
     [SerializeField] private float speed = 5.0f;
+    [SerializeField] private float maxSpeed = 20.0f;
+    [SerializeField, Range(1f, 2f)] private float reverseFactor = 1.5f;
+    [SerializeField] private float airResistanceFactor = 3f;
 
     private Rigidbody rb;
 
@@ -34,9 +37,27 @@ public class LeaderMovement : MonoBehaviour
 
     void Update()
     {
-        if (moveInput.sqrMagnitude > 0)
+        float sign = Vector3.Dot(new Vector3(moveInput.x, moveInput.y, 0), rb.linearVelocity);
+        if (moveInput.sqrMagnitude > 0 && (sign < 0 || rb.linearVelocity.magnitude < 20.0f))
         {
             rb.AddForce(speed * new Vector3(moveInput.x, moveInput.y, 0), ForceMode.Acceleration);
+        }
+        
+        Vector3 input = new Vector3(moveInput.x, moveInput.y, 0f);
+        Vector3 velocity = rb.linearVelocity;
+
+        if (input.sqrMagnitude > 0f)
+        {
+            float dot = Vector3.Dot(input, velocity);
+
+            float revFac = (dot < 0f ? reverseFactor : 1f);  // for reversing faster
+            // maximum speed check
+            if (velocity.sqrMagnitude < maxSpeed * maxSpeed || dot < 0f)
+                rb.AddForce(speed * revFac * input, ForceMode.Acceleration);
+        }
+        else if(velocity.sqrMagnitude > 0f)
+        {
+            rb.linearVelocity -= airResistanceFactor * Time.deltaTime * velocity;
         }
     }
 }
