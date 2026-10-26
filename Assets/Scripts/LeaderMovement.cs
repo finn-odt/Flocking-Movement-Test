@@ -25,17 +25,8 @@ public class LeaderMovement : MonoBehaviour
     {
         moveInput = value.Get<Vector2>();
     }
-    
-    // Called automatically by Player Input
-    public void OnSplit(InputValue value)
-    {
-        if (value.isPressed)
-        {
-            AgentSpawner.Split();
-        }
-    }
 
-    void Update()
+    void FixedUpdate()
     {
         float sign = Vector3.Dot(new Vector3(moveInput.x, moveInput.y, 0), rb.linearVelocity);
         if (moveInput.sqrMagnitude > 0 && (sign < 0 || rb.linearVelocity.magnitude < 20.0f))

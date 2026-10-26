@@ -17,6 +17,7 @@ public struct BuildGridJob : IJobParallelFor
 
     public void Execute(int index)
     {
+        // SPATIAL HASH GRID
         int3 cell = (int3)math.floor(Positions[index] / CellSize);
 
         Grid.Add(cell, index);
@@ -39,12 +40,12 @@ public struct CalculateSteeringForceJob : IJobParallelFor
 
     [ReadOnly]
     public NativeParallelMultiHashMap<int3, int> Grid;
+    
+    [ReadOnly] 
+    public NativeArray<NativeFlockLeader> Leaders;
 
     [WriteOnly]
     public NativeArray<float3> SteeringForces;
-
-    public float3 LeaderPosition;
-    public float3 LeaderVelocity;
 
     public float CellSize;
     public int MaxNeighbors;
@@ -182,25 +183,40 @@ public struct CalculateSteeringForceJob : IJobParallelFor
         }
 
         // LEADER ATTRACTION
-        float3 leaderOffset = LeaderPosition - position;
-        float leaderDistance = math.length(leaderOffset);
+        NativeFlockLeader leader = Leaders[flock.LeaderId];
+
+        float3 positionError = leader.Position - position;
+        float3 velocityError = leader.Velocity - velocity;
+
+        // Stronger position correction when falling behind.
+        float3 catchUpAcceleration = positionError * flock.AttractionPositionWeight;
+
+        // Match the leader's current velocity.
+        float3 velocityMatchingAcceleration = velocityError * flock.AttractionVelocityWeight;
+
+        leaderAttractionForce = Limit(catchUpAcceleration + velocityMatchingAcceleration, flock.MaxForce);
         
-        float3 leaderDirection = math.normalizesafe(leaderOffset);
-        
-        float desiredSpeedToLeader = math.min(leaderDistance * 2f, flock.MaxSpeed);
-        float3 desiredVelocityToLeader = leaderDirection * desiredSpeedToLeader + LeaderVelocity;
-        
-        // anti-proportional (more force, the further away)
-        leaderAttractionForce = Limit(desiredVelocityToLeader - velocity, flock.MaxForce);
         
         
-        // apply different weights for different behaviour
-        SteeringForces[index] = Limit(
-            separationForce * flock.SeparationWeight
+        float distanceToLeader = math.distance(position, leader.Position);
+
+        // Stronger separation near the leader
+        float separationMultiplier = 1f / math.max(distanceToLeader, 1f);
+
+        float3 survivalSteering = Limit(
+            separationForce * flock.SeparationWeight * separationMultiplier,
+            flock.SeparationMaxAcceleration
+        );
+
+        float maxFollowingAcc = math.lengthsq(leader.Velocity) > 0.005f ? flock.FollowingMaxAccelerationInMotion : flock.FollowingMaxAcceleration;
+        float3 followingSteering = Limit(
+            leaderAttractionForce * flock.LeaderAttractionWeight
             + alignmentForce * flock.AlignmentWeight
-            + cohesionForce * flock.CohesionWeight
-            + leaderAttractionForce * flock.LeaderAttractionWeight,
-            flock.MaxForce);
+            + cohesionForce * flock.CohesionWeight,
+            maxFollowingAcc
+        );
+
+        SteeringForces[index] = survivalSteering + followingSteering;
     }
     
     private static float3 Limit(float3 vector, float maxLength)

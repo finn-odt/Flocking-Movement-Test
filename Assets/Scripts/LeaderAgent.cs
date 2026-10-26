@@ -1,188 +1,170 @@
+using System;
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.Serialization;
 using Random = UnityEngine.Random;
 
-public class LeaderAgent : MonoBehaviour
+public interface ILeaderAgent
 {
+    LeaderManager Manager { get; set; }
+}
+
+[RequireComponent(typeof(Rigidbody))]
+public class LeaderAgent : MonoBehaviour, ILeaderAgent
+{
+    public LeaderManager Manager { get; set; }
     
-    [SerializeField] private Transform flockParentObj;
-    [SerializeField] private Transform flockLeader;
-    [SerializeField] private Rigidbody flockLeaderRB;
-    [SerializeField] private GameObject agentPrefab;
+    private Rigidbody rb;
     
-    [SerializeField] private float spawnRadius = 6.0f;
-    [SerializeField] private bool spawnOnSphere = false;
-    [SerializeField] private int numberOfAgents = 10;
-        
-    private readonly List<Rigidbody> agents = new();
-    private readonly List<int> agentFlockIds = new();
-    private readonly List<Flock> controlledFlocks = new();
+    private float pathProgress;
+    private bool pathFinished;
+    private bool wasDrawing;
     
-    // JOBS Parameters
-    private NativeParallelMultiHashMap<int3, int> grid;
+    private int currentSegment;
     
-    private float cellSize = 8.0f;  // always >= SightRadius (of Flock)
-    
-    private NativeArray<float3> positions;  // input
-    private NativeArray<float3> velocities;  // input
-    private NativeArray<int> flockIds;  // input
-    private NativeArray<FlockSettings> flockSettingsById;  // input
-    private NativeArray<float3> steeringForces;  // output
-    
-    void Start()
+    [SerializeField] private float moveSpeed = 15f;
+    [SerializeField] private float maxAcceleration = 30f;
+    [SerializeField] private float arrivalRadius = 0.05f;
+    [SerializeField] private float slowingRadius = 3f;
+    [SerializeField] private float lookAheadDistance = 2f;
+    [SerializeField] private float responseTime = 0.1f;
+
+    private void Awake()
     {
-        controlledFlocks.Add(new Flock());
+        rb = GetComponent<Rigidbody>();
+    }
+
+    private void FixedUpdate()
+    {
+        // if(manager == null) is expensive...
         
-        for (int i = 0; i < numberOfAgents; i++)
+        var path = Manager.SlashLocations;
+        
+        // Detect the beginning of a new slash
+        if (Manager.DrawingActive && !wasDrawing)
         {
-            Vector3 initPos = flockLeader.position + (spawnOnSphere ? Random.onUnitSphere : Random.insideUnitSphere) * spawnRadius;
-            GameObject o = Instantiate(agentPrefab, flockParentObj);
-            if (o != null)
+            pathProgress = 0f;
+            pathFinished = false;
+            currentSegment = 0;
+        }
+        wasDrawing = Manager.DrawingActive;
+        
+        if (path.Count < 2 || pathFinished)
+            return;
+        
+
+        Vector3 pos = rb.position;
+        // Find closest point on the path, without going backward relative to previous progress
+        pathProgress = Mathf.Max(
+            pathProgress,
+            FindClosestProgress(path, Manager.SlashDistances, rb.position)
+        );
+
+        var distances = Manager.SlashDistances;
+
+        // update progress and segment index
+        while (currentSegment + 1 < distances.Count - 1 && distances[currentSegment + 1] <= pathProgress)
+            currentSegment++;
+        
+        float totalLength = Manager.SlashLength;
+        
+        // Aim farther along the path
+        float targetProgress = Mathf.Min(pathProgress + lookAheadDistance, totalLength);
+
+        Vector3 target = EvaluatePath(path, Manager.SlashDistances, targetProgress, currentSegment);
+
+        Vector3 offset = target - pos;
+        float distance = offset.magnitude;
+
+        // Only use arrival behavior at the completed end
+        bool finalTarget = !Manager.DrawingActive && targetProgress >= totalLength - 0.001f;
+
+        if (finalTarget && distance <= arrivalRadius && rb.linearVelocity.magnitude < 0.5f)
+        {
+            pathFinished = true;
+            rb.linearVelocity = Vector3.zero;  // stop immediately
+            return;
+        }
+
+        // slow down when reaching the final target
+        float desiredSpeed = moveSpeed;
+        if (finalTarget)
+            desiredSpeed *= Mathf.Clamp01( distance / slowingRadius);
+
+        Vector3 desiredVelocity = distance > 0.0001f ? offset / distance * desiredSpeed : Vector3.zero;
+
+        // Velocity tracking with acceleration limiting [steering = desired - velocity]
+        Vector3 acceleration = (desiredVelocity - rb.linearVelocity) / Mathf.Max(responseTime, 0.01f);
+        acceleration = Vector3.ClampMagnitude(acceleration, maxAcceleration);
+
+        rb.AddForce(acceleration, ForceMode.Acceleration);
+    }
+
+    private float FindClosestProgress(IReadOnlyList<Vector3> path, IReadOnlyList<float> distances, Vector3 position)
+    {
+        float bestDistanceSq = float.MaxValue;
+        float bestProgress = pathProgress;  // cached progress so far
+        
+        // Only look a few segments forward
+        int end = Mathf.Min(currentSegment + 8, path.Count - 2);
+        int start = Mathf.Max(1, currentSegment);
+
+        for (int i = start; i <= end; i++)
+        {
+            // build segments of the path (point to point)
+            Vector3 a = path[i - 1];
+            Vector3 b = path[i];
+
+            Vector3 ab = b - a;
+            float lengthSq = ab.sqrMagnitude;  // segment length
+
+            if (lengthSq < 1e-8f)
+                continue;
+            
+            // full length of the path to the end of this segment
+            float length = distances[i + 1] - distances[i];
+            
+            // Restrict projection to currentSegment or later progress.
+            float minT = (i == currentSegment) ? Mathf.Clamp01( (pathProgress - distances[i]) / length) : 0f;
+
+            // project leader-position onto segment AB (to track progress along the line)
+            float t = Mathf.Clamp(Vector3.Dot(position - a, ab) / lengthSq, minT, 1f);
+
+            Vector3 closest = a + ab * t;
+            float distSq = (position - closest).sqrMagnitude;
+
+            if (distSq < bestDistanceSq)
             {
-                o.transform.position = initPos;
-                // add agent to List for this Flock-object
-                Rigidbody r = o.GetComponent<Rigidbody>();
-                if (r != null)
-                    RegisterAgent(r, 0);
-                else
-                    Destroy(o);
+                bestDistanceSq = distSq;
+                bestProgress = distances[i] + t * length;
             }
         }
 
-        InitializeNativeData();
+        return bestProgress;
     }
-    
-    private void RegisterAgent(Rigidbody rb, int flockId)
+
+    private static Vector3 EvaluatePath(IReadOnlyList<Vector3> path, IReadOnlyList<float> distances, float progress, int startSegment)
     {
-        agents.Add(rb);
-        agentFlockIds.Add(flockId);
-    }
-    
-    private void InitializeNativeData()
-    {
-        int agentCount = agents.Count;
-        int flockCount = controlledFlocks.Count;
+        if (path.Count < 2 || distances.Count != path.Count)
+            return path.Count > 0 ? path[^1] : Vector3.zero;
 
-        positions = new NativeArray<float3>(agentCount, Allocator.Persistent);
-        velocities = new NativeArray<float3>(agentCount, Allocator.Persistent);
-        steeringForces = new NativeArray<float3>(agentCount, Allocator.Persistent);
-        flockIds = new NativeArray<int>(agentCount, Allocator.Persistent);
-        flockSettingsById = new NativeArray<FlockSettings>(flockCount, Allocator.Persistent);
-        grid = new NativeParallelMultiHashMap<int3, int>(agentCount, Allocator.Persistent);
+        int i = Mathf.Clamp(startSegment, 0, path.Count - 2);
 
-        UpdateFlockSettings();
-    }
-    
-    private void UpdateFlockSettings()
-    {
-        for (int i = 0; i < controlledFlocks.Count; i++)
-            flockSettingsById[i] = ToSettings(controlledFlocks[i]);
-    }
-    
-    private static FlockSettings ToSettings(Flock flock)
-    {
-        return new FlockSettings
-        {
-            MaxSpeed = flock.maxSpeed,
-            MaxForce = flock.maxForce,
+        while (i < path.Count - 2 && distances[i + 1] < progress)
+            i++;
 
-            SightRadius = flock.sightRadius,
-            SeparationRadius = flock.separationRadius,
+        float segmentLength = distances[i + 1] - distances[i];
 
-            SeparationWeight = flock.separationWeight,
-            AlignmentWeight = flock.alignmentWeight,
-            CohesionWeight = flock.cohesionWeight,
-            LeaderAttractionWeight = flock.leaderAttractionWeight,
+        if (segmentLength <= 1e-6f)
+            return path[i + 1];
 
-            MinPeers = flock.minPeersInSight,
-            MaxPeers = flock.maxPeersInSight
-        };
-    }
-    
-    
-    
-    private void FixedUpdate()
-    {
-        // 1. Capture agent physics state
-        for (int i = 0; i < agents.Count; i++)
-        {
-            positions[i] = agents[i].position;
-            velocities[i] = agents[i].linearVelocity;
-            flockIds[i] = agentFlockIds[i];
-        }
-
-        grid.Clear();
+        float t = Mathf.Clamp01((progress - distances[i]) / segmentLength);
         
-        // 2. Schedule spatial grid and steering jobs
-        JobHandle buildHandle = ScheduleSpatialGridBuild();
-
-        JobHandle flockingHandle = ScheduleFlocking(buildHandle);
-
-        flockingHandle.Complete();  // wait for Jobs to end to use results
-
-        // 3. Apply the calculated steering forces
-        for (int i = 0; i < agents.Count; i++)
-        {
-            agents[i].AddForce(steeringForces[i]);
-        }
+        // interpolate the correct inbetween
+        return Vector3.Lerp(path[i], path[i + 1], t);
     }
-    
-    
-    
-    private JobHandle ScheduleSpatialGridBuild()
-    {
-        var buildJob = new BuildGridJob
-        {
-            Positions = positions,
-            Grid = grid.AsParallelWriter(),
-            CellSize = cellSize
-        };
-
-        return buildJob.Schedule(positions.Length, 64);
-    }
-
-    private JobHandle ScheduleFlocking(JobHandle buildHandle)
-    {
-        var queryJob = new CalculateSteeringForceJob()
-        {
-            Positions = positions,
-            Velocities  = velocities,
-            FlockIds = flockIds,
-            FlockSettingsById = flockSettingsById,
-            Grid = grid,
-            SteeringForces = steeringForces,
-            LeaderPosition = flockLeader.position,
-            LeaderVelocity =  flockLeaderRB.linearVelocity,
-            CellSize = cellSize,
-            MaxNeighbors = 7
-        };
-
-        return queryJob.Schedule(positions.Length, 64, buildHandle);
-    }
-    
-    private void OnDestroy()
-    {
-        if (positions.IsCreated)
-            positions.Dispose();
-
-        if (velocities.IsCreated)
-            velocities.Dispose();
-
-        if (flockIds.IsCreated)
-            flockIds.Dispose();
-
-        if (flockSettingsById.IsCreated)
-            flockSettingsById.Dispose();
-
-        if (steeringForces.IsCreated)
-            steeringForces.Dispose();
-
-        if (grid.IsCreated)
-            grid.Dispose();
-    }
-
 }
