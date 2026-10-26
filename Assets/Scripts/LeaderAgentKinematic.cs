@@ -22,11 +22,6 @@ public class LeaderAgentKinematic : MonoBehaviour, ILeaderAgent
     private int currentSegment;
     
     [SerializeField] private float moveSpeed = 15f;
-    [SerializeField] private float maxAcceleration = 30f;
-    [SerializeField] private float arrivalRadius = 0.05f;
-    [SerializeField] private float slowingRadius = 3f;
-    [SerializeField] private float lookAheadDistance = 2f;
-    [SerializeField] private float responseTime = 0.1f;
     
     private void Awake()
     {

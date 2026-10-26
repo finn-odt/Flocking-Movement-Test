@@ -34,8 +34,8 @@ public class Flock
     public float attractionPositionWeight = 4.5f;
     public float attractionVelocityWeight = 6f;
 
-    public float sightRadius = 8.0f;
-    public float separationRadius = 6.0f;
+    public float sightRadius = 20.0f;
+    public float separationRadius = 12.0f;
 
     public float separationWeight = 0.7f;
     public float alignmentWeight = 1f;

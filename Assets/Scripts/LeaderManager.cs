@@ -21,9 +21,10 @@ public class LeaderManager : MonoBehaviour
     [SerializeField] private bool spawnOnSphere = false;
     [SerializeField] private int numberOfAgents = 10;
     
-    private float cellSize = 8.0f;  // always >= SightRadius (of Flock)
+    private float cellSize = 20.0f;  // always >= SightRadius (of Flock)
         
     private readonly List<Rigidbody> agents = new();
+    private readonly List<Collider> agentColliders = new();
     private readonly List<int> agentFlockIds = new();
     private readonly List<int> agentLeaderIds = new();
     private readonly List<Flock> controlledFlocks = new();
@@ -38,8 +39,20 @@ public class LeaderManager : MonoBehaviour
     [SerializeField, Min(0f)] private float formationDamping = 5f;
     [SerializeField, Min(0f)] private float formationMaxAcceleration = 40f;
     
+    // Formation Animations
+    [SerializeField] private List<SkinnedMeshRenderer> formationMeshRenderers;
+    // how to start the animation?
+    // BakeMesh -> GetVertices
+    //      -> how often? 10-15fps?
+    
     private bool formationActive = false;
     public bool IsFormationActive => formationActive;
+    
+    [Header("Obstacle Avoidance")]
+    [SerializeField] private LayerMask obstacleMask;
+    [SerializeField] private float avoidanceRadius = 0.4f;
+    [SerializeField] private float avoidanceDistance = 4f;
+    [SerializeField] private float avoidanceStrength = 20f;
     
     // JOBS Parameters
     private NativeParallelMultiHashMap<int3, int> grid;
@@ -76,17 +89,12 @@ public class LeaderManager : MonoBehaviour
         for (int i = 0; i < numberOfAgents; i++)
         {
             Vector3 initPos = flockLeaders[0].transform.position + (spawnOnSphere ? Random.onUnitSphere : Random.insideUnitSphere) * spawnRadius;
-            GameObject o = Instantiate(agentPrefab, flockParentObj);
-            if (o != null)
-            {
-                o.transform.position = initPos;
-                // add agent to List for this Flock-object
-                Rigidbody r = o.GetComponent<Rigidbody>();
-                if (r != null)
-                    RegisterAgent(r, 0);
-                else
-                    Destroy(o);
-            }
+            GameObject o = Instantiate(agentPrefab, initPos, Quaternion.identity, flockParentObj);
+            Rigidbody rb = o.GetComponent<Rigidbody>();
+            if (rb != null)  // add agent to List for this Flock-object
+                RegisterAgent(rb, 0);
+            else
+                Destroy(o);
         }
 
         InitializeNativeData();
@@ -161,6 +169,8 @@ public class LeaderManager : MonoBehaviour
     {
         agents.Add(rb);
         agentFlockIds.Add(flockId);
+        
+        agentColliders.Add(rb.GetComponent<Collider>());
     }
     
     /// <summary>
@@ -484,6 +494,17 @@ public class LeaderManager : MonoBehaviour
         formationMeshFilter.sharedMesh = mesh;
         previousFormationMatrix = ToFloat4x4(formationMeshFilter.transform.localToWorldMatrix);
         formationActive = true;
+        
+        // deactivate colliders shortly to enable them quick forming
+        //SetAgentCollisions(false);
+    }
+    
+    private void SetAgentCollisions(bool enabled)
+    {
+        for (int i = 0; i < agentColliders.Count; i++)
+        {
+            agentColliders[i].enabled = enabled;
+        }
     }
     
     private static float4x4 ToFloat4x4(Matrix4x4 m)
@@ -522,7 +543,7 @@ public class LeaderManager : MonoBehaviour
     }
     
     private void FixedUpdate()
-    {        
+    {
         if (!positions.IsCreated || agents.Count == 0)
             return;
         
@@ -559,13 +580,49 @@ public class LeaderManager : MonoBehaviour
 
         handle.Complete(); // wait for Jobs to end to use results
         
-        // Apply the calculated steering forces
+        
+
         for (int i = 0; i < agents.Count; i++)
         {
-            agents[i].AddForce(steeringForces[i], formationActive ? ForceMode.Acceleration : ForceMode.Force);
+            Rigidbody rb = agents[i];
+
+            Vector3 steering = steeringForces[i];
+            
+            Vector3 avoidance = Vector3.zero;  // CalculateObstacleAvoidance(rb.position, rb.linearVelocity, steering);
+
+            if (formationActive)
+            {
+                rb.AddForce(steering + avoidance, ForceMode.Acceleration);
+            }
+            else
+            {
+                rb.AddForce(steering, ForceMode.Force);
+                rb.AddForce(avoidance, ForceMode.Acceleration);
+            }
         }
     }
     
+    private Vector3 CalculateObstacleAvoidance(Vector3 position, Vector3 velocity, Vector3 steering)
+    {
+        Vector3 desired = velocity + steering * Time.fixedDeltaTime;
+
+        if (desired.sqrMagnitude < 0.001f)
+            return Vector3.zero;
+
+        Vector3 direction = desired.normalized;
+
+        if (!Physics.SphereCast(position, avoidanceRadius, direction, out RaycastHit hit, avoidanceDistance, obstacleMask, QueryTriggerInteraction.Ignore))
+            return Vector3.zero;
+
+        // Remove the velocity component pointing into the obstacle
+        Vector3 tangent = Vector3.ProjectOnPlane(direction, hit.normal);
+
+        float urgency = 1f - hit.distance / avoidanceDistance;
+        Vector3 desiredDirection = tangent.sqrMagnitude > 0.001f ? tangent.normalized : hit.normal;
+        Vector3 correction = desiredDirection - direction;
+
+        return avoidanceStrength * urgency * correction;
+    }
     
     
     private JobHandle ScheduleSpatialGridBuild()
