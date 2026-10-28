@@ -83,6 +83,7 @@ public struct CalculateFormationForceJob : IJobParallelFor
     [ReadOnly] public NativeArray<float3> Positions;
     [ReadOnly] public NativeArray<float3> Velocities;
     [ReadOnly] public NativeArray<float3> LocalTargets;
+    [ReadOnly] public NativeArray<float3> PreviousLocalTargets;
     [WriteOnly] public NativeArray<float3> SteeringForces;  // output
 
     public float4x4 CurrentLocalToWorld;
@@ -97,7 +98,7 @@ public struct CalculateFormationForceJob : IJobParallelFor
         float3 targetLocal = LocalTargets[index];
         // transform target to world coordinates
         float3 target = math.transform(CurrentLocalToWorld, targetLocal);
-        float3 oldTarget = math.transform(PreviousLocalToWorld, targetLocal);
+        float3 oldTarget = math.transform(PreviousLocalToWorld, PreviousLocalTargets[index]);
 
         float3 targetVelocity = (target - oldTarget) / math.max(FixedDeltaTime, 1e-5f);  // movement difference over time (of Target)
         float3 positionError = target - Positions[index];  // distance from Agent to Target
@@ -109,5 +110,29 @@ public struct CalculateFormationForceJob : IJobParallelFor
             acceleration = math.normalizesafe(acceleration) * MaxAcceleration;
 
         SteeringForces[index] = acceleration;
+    }
+}
+
+[BurstCompile]
+public struct UpdateAnimatedFormationTargetsJob : IJobParallelFor
+{
+    [ReadOnly] public NativeArray<float3> AnimatedVertices;
+
+    [ReadOnly] public NativeArray<SurfaceAttachment> Attachments;
+
+    [WriteOnly] public NativeArray<float3> LocalTargets;
+
+    public void Execute(int index)
+    {
+        SurfaceAttachment attachment = Attachments[index];
+
+        int3 tri = attachment.Triangle;  // indices for vertices of triangle
+        float3 w = attachment.Barycentric;
+
+        float3 a = AnimatedVertices[tri.x];
+        float3 b = AnimatedVertices[tri.y];
+        float3 c = AnimatedVertices[tri.z];
+
+        LocalTargets[index] = w.x * a + w.y * b + w.z * c;
     }
 }

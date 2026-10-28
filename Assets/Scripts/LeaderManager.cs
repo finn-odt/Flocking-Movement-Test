@@ -31,7 +31,13 @@ public class LeaderManager : MonoBehaviour
     
     // FORMATION
     [Header("Formation")]
-    [Tooltip("MeshFilter on a child of the leader, containing the reference shape.")]
+    [SerializeField] private Transform formationParentObj;
+    [SerializeField] private GameObject formationPrefab;
+
+    private SkinnedMeshRenderer formationSkinnedRenderer;
+    private Mesh bakedMesh;
+    private readonly List<Vector3> bakedVertexList = new();
+    
     [SerializeField] private MeshFilter formationMeshFilter;
     [SerializeField] private List<Mesh> formationMeshes = new();
     [SerializeField] private uint samplingSeed = 12345u;
@@ -68,11 +74,7 @@ public class LeaderManager : MonoBehaviour
     private float4x4 previousFormationMatrix;
     
     private NativeArray<SurfaceAttachment> formationAttachments;
-    /*
     private NativeArray<float3> animatedVertices;
-    private Mesh bakedMesh;
-    private readonly List<Vector3> bakedVertexList = new();
-    */
     
     void Start()
     {
@@ -228,6 +230,30 @@ public class LeaderManager : MonoBehaviour
         };
     }
     
+    private void InitializeAnimatedFormation()
+    {
+        if (formationSkinnedRenderer == null)
+            return;
+
+        bakedMesh = new Mesh();
+
+        int vertexCount = formationSkinnedRenderer.sharedMesh.vertexCount;
+
+        animatedVertices = new NativeArray<float3>(vertexCount, Allocator.Persistent);
+    }
+    
+    private void UpdateAnimatedVertices()
+    {
+        formationSkinnedRenderer.BakeMesh(bakedMesh);
+
+        bakedMesh.GetVertices(bakedVertexList);
+
+        for (int i = 0; i < bakedVertexList.Count; i++)
+        {
+            animatedVertices[i] = bakedVertexList[i];
+        }
+    }
+    
     // Called automatically by Player Input
     public void OnFormation(InputValue value)
     {
@@ -314,6 +340,9 @@ public class LeaderManager : MonoBehaviour
         slashRenderer.useWorldSpace = true;
         slashRenderer.positionCount = 0;
         slashRenderer.enabled = false;
+        
+        if(formationParentObj != null)
+            formationSkinnedRenderer = formationParentObj.GetComponentInChildren<SkinnedMeshRenderer>();
     }
     
     public void OnDraw(InputValue value)
@@ -397,18 +426,23 @@ public class LeaderManager : MonoBehaviour
     /// Sample one target per agent. Called once per formation activation / mesh change.
     /// Mesh must be readable and must be rendered by formationMeshFilter.
     /// </summary>
-    public void StartFormation(Mesh mesh)
+    public void StartFormation()
     {
         if (!positions.IsCreated)
         {
             Debug.LogError("Initialize agents before starting a formation.", this);
             return;
         }
+        
+        Mesh mesh = formationSkinnedRenderer.sharedMesh;
+        
         if (formationMeshFilter == null || mesh == null || !mesh.isReadable)
         {
             Debug.LogError("Assign a Formation MeshFilter and a readable mesh (import-configs).", this);
             return;
         }
+
+        InitializeAnimatedFormation();
         
         var meshVertices = new List<Vector3>(mesh.vertexCount);
         mesh.GetVertices(meshVertices);
@@ -491,8 +525,7 @@ public class LeaderManager : MonoBehaviour
         }
 
         // Make sure displayed and sampled geometry match.
-        formationMeshFilter.sharedMesh = mesh;
-        previousFormationMatrix = ToFloat4x4(formationMeshFilter.transform.localToWorldMatrix);
+        previousFormationMatrix = ToFloat4x4(formationSkinnedRenderer.transform.localToWorldMatrix);
         formationActive = true;
         
         // deactivate colliders shortly to enable them quick forming
@@ -539,7 +572,11 @@ public class LeaderManager : MonoBehaviour
     public void StopFormation()
     {
         formationActive = false;
-        // Keep sampled points allocated for the next activation.
+        
+        if(bakedMesh != null)
+            bakedMesh.Clear();
+        if(animatedVertices.IsCreated) 
+            animatedVertices.Dispose();
     }
     
     private void FixedUpdate()
@@ -569,7 +606,18 @@ public class LeaderManager : MonoBehaviour
         JobHandle handle;
         if (formationActive)
         {
-            handle = ScheduleFormation();
+            UpdateAnimatedVertices();
+
+            var updateJob = new UpdateAnimatedFormationTargetsJob
+            {
+                AnimatedVertices = animatedVertices,
+                Attachments = formationAttachments,
+                LocalTargets = formationTargetsLocal
+            };
+
+            JobHandle updateHandle = updateJob.Schedule(agents.Count, 64);
+
+            handle = ScheduleFormation(updateHandle);
         }
         else
         {
@@ -588,7 +636,7 @@ public class LeaderManager : MonoBehaviour
 
             Vector3 steering = steeringForces[i];
             
-            Vector3 avoidance = Vector3.zero;  // CalculateObstacleAvoidance(rb.position, rb.linearVelocity, steering);
+            Vector3 avoidance = CalculateObstacleAvoidance(rb.position, rb.linearVelocity, steering);
 
             if (formationActive)
             {
@@ -637,7 +685,7 @@ public class LeaderManager : MonoBehaviour
         return buildJob.Schedule(positions.Length, 64);
     }
 
-    private JobHandle ScheduleFlocking(JobHandle buildHandle)
+    private JobHandle ScheduleFlocking(JobHandle dependency)
     {
         var queryJob = new CalculateSteeringForceJob()
         {
@@ -652,10 +700,10 @@ public class LeaderManager : MonoBehaviour
             MaxNeighbors = 7
         };
 
-        return queryJob.Schedule(positions.Length, 64, buildHandle);
+        return queryJob.Schedule(positions.Length, 64, dependency);
     }
 
-    private JobHandle ScheduleFormation()
+    private JobHandle ScheduleFormation(JobHandle dependency)
     {
         float4x4 currentFormationMatrix = ToFloat4x4(formationMeshFilter.transform.localToWorldMatrix);
         
@@ -664,6 +712,7 @@ public class LeaderManager : MonoBehaviour
             Positions = positions,
             Velocities  = velocities,
             LocalTargets = formationTargetsLocal,
+            PreviousLocalTargets = ,
             SteeringForces = steeringForces,
             CurrentLocalToWorld = currentFormationMatrix,
             PreviousLocalToWorld = previousFormationMatrix,
@@ -673,7 +722,7 @@ public class LeaderManager : MonoBehaviour
             MaxAcceleration = formationMaxAcceleration
         };
 
-        JobHandle handle = queryJob.Schedule(agents.Count, 64);
+        JobHandle handle = queryJob.Schedule(agents.Count, 64, dependency);
         
         previousFormationMatrix = currentFormationMatrix;
         return handle;
