@@ -73,16 +73,19 @@ public struct NativeFlockLeader
 {
     public float3 Position;
     public float3 Velocity;
+    public float MaxSpeed;
 }
 
 [Serializable]
 public struct FlockLeader
 {
-    public FlockLeader(Transform t, Rigidbody r)
+    public FlockLeader(Transform t, Rigidbody r, float maxSpeed)
     {
         transform = t;
         rigidbody = r;
+        this.maxSpeed = maxSpeed;
     }
     public Transform transform;
     public Rigidbody rigidbody;
+    public float maxSpeed;
 }

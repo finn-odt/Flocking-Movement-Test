@@ -126,7 +126,7 @@ public class LeaderManager : MonoBehaviour
             Rigidbody r = o.GetComponent<Rigidbody>();
             if (r != null)
             {
-                flockLeaders.Add(new FlockLeader( o.transform, r ));
+                flockLeaders.Add(new FlockLeader( o.transform, r, 15f ));
                 return flockLeaders.Count - 1;
             }
             else
@@ -632,7 +632,8 @@ public class LeaderManager : MonoBehaviour
             flockLeaderById[i] = new NativeFlockLeader
             {
                 Position = flockLeaders[i].transform.position,
-                Velocity = flockLeaders[i].rigidbody.linearVelocity
+                Velocity = flockLeaders[i].rigidbody.linearVelocity,
+                MaxSpeed = flockLeaders[i].maxSpeed
             };
         }
         

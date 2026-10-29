@@ -208,12 +208,16 @@ public struct CalculateSteeringForceJob : IJobParallelFor
             flock.SeparationMaxAcceleration
         );
 
-        float maxFollowingAcc = math.lengthsq(leader.Velocity) > 0.005f ? flock.FollowingMaxAccelerationInMotion : flock.FollowingMaxAcceleration;
+        float speedRatio = math.saturate( math.length(leader.Velocity) / math.max(leader.MaxSpeed, 0.001f) );
+        float biasedRatio = math.pow(speedRatio, 0.4f);  // Bias toward FollowingMaxAccelerationInMotion
+        float interpolatedFollowingAcceleration = math.lerp(flock.FollowingMaxAcceleration, flock.FollowingMaxAccelerationInMotion, biasedRatio);
+        
+        //float maxFollowingAcc = math.lengthsq(leader.Velocity) > 0.5f ? flock.FollowingMaxAccelerationInMotion : flock.FollowingMaxAcceleration;
         float3 followingSteering = Limit(
             leaderAttractionForce * flock.LeaderAttractionWeight
             + alignmentForce * flock.AlignmentWeight
             + cohesionForce * flock.CohesionWeight,
-            maxFollowingAcc
+            interpolatedFollowingAcceleration
         );
 
         SteeringForces[index] = survivalSteering + followingSteering;
