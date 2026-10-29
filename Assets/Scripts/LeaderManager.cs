@@ -9,8 +9,6 @@ using Random = UnityEngine.Random;
 
 public class LeaderManager : MonoBehaviour
 {
-    
-    
     [SerializeField, Tooltip("NOT the Leader!")] private Transform flockParentObj;  // Stationary scene container, NOT the moving leader.
     [SerializeField] private int maxNumberOfLeaders = 16;
     [SerializeField] private List<FlockLeader> flockLeaders = new();
@@ -30,7 +28,7 @@ public class LeaderManager : MonoBehaviour
     private readonly List<Flock> controlledFlocks = new();
     
     // FORMATION
-    [Header("Formation")]
+    [Header("Formation")] [SerializeField] private bool formationMeshVisible = true;
     [SerializeField] private Transform formationParentObj;
     [SerializeField] private GameObject formationPrefab;
 
@@ -71,6 +69,7 @@ public class LeaderManager : MonoBehaviour
     private NativeArray<float3> steeringForces;  // output
     
     private NativeArray<float3> formationTargetsLocal;
+    private NativeArray<float3> previousFormationTargetsLocal;
     private float4x4 previousFormationMatrix;
     
     private NativeArray<SurfaceAttachment> formationAttachments;
@@ -232,7 +231,7 @@ public class LeaderManager : MonoBehaviour
     
     private void InitializeAnimatedFormation()
     {
-        if (formationSkinnedRenderer == null)
+        if (formationSkinnedRenderer == null || formationSkinnedRenderer.sharedMesh == null)
             return;
 
         bakedMesh = new Mesh();
@@ -240,11 +239,12 @@ public class LeaderManager : MonoBehaviour
         int vertexCount = formationSkinnedRenderer.sharedMesh.vertexCount;
 
         animatedVertices = new NativeArray<float3>(vertexCount, Allocator.Persistent);
+        previousFormationTargetsLocal = new NativeArray<float3>(agents.Count, Allocator.Persistent);
     }
     
     private void UpdateAnimatedVertices()
     {
-        formationSkinnedRenderer.BakeMesh(bakedMesh);
+        formationSkinnedRenderer.BakeMesh(bakedMesh, true);
 
         bakedMesh.GetVertices(bakedVertexList);
 
@@ -340,9 +340,6 @@ public class LeaderManager : MonoBehaviour
         slashRenderer.useWorldSpace = true;
         slashRenderer.positionCount = 0;
         slashRenderer.enabled = false;
-        
-        if(formationParentObj != null)
-            formationSkinnedRenderer = formationParentObj.GetComponentInChildren<SkinnedMeshRenderer>();
     }
     
     public void OnDraw(InputValue value)
@@ -421,6 +418,24 @@ public class LeaderManager : MonoBehaviour
         if (movementPlane.Raycast(ray, out float distance))
             AddSlashPoint(ray.GetPoint(distance));
     }
+
+    private void InitializeFormationRenderer()
+    {
+        GameObject o = Instantiate(formationPrefab, formationParentObj.position + new Vector3(0f, -4f, 0f), Quaternion.Euler(0f, 180f, 0f), formationParentObj);
+        SkinnedMeshRenderer skin = o.GetComponentInChildren<SkinnedMeshRenderer>();
+        if (skin != null)
+            formationSkinnedRenderer = skin;
+    }
+    
+    private void DestroyFormationRenderer()
+    {
+        foreach (Transform c in formationParentObj.transform)
+        {
+            Destroy(c.gameObject);
+        }
+        
+        formationSkinnedRenderer = null;
+    }
     
     /// <summary>
     /// Sample one target per agent. Called once per formation activation / mesh change.
@@ -433,12 +448,21 @@ public class LeaderManager : MonoBehaviour
             Debug.LogError("Initialize agents before starting a formation.", this);
             return;
         }
+
+        InitializeFormationRenderer();
         
+        if (formationSkinnedRenderer == null || formationSkinnedRenderer.sharedMesh == null)
+        {
+            Debug.LogError("Assign a Skinned Mesh Renderer for the Animation-Morphing.", this);
+            return;
+        }
+        
+        formationSkinnedRenderer.enabled = formationMeshVisible;  // do not show the mesh
         Mesh mesh = formationSkinnedRenderer.sharedMesh;
         
-        if (formationMeshFilter == null || mesh == null || !mesh.isReadable)
+        if (!mesh.isReadable)
         {
-            Debug.LogError("Assign a Formation MeshFilter and a readable mesh (import-configs).", this);
+            Debug.LogError("Enable Read/Write for the mesh in the import-configurations", this);
             return;
         }
 
@@ -523,13 +547,25 @@ public class LeaderManager : MonoBehaviour
             triangles.Dispose();
             cumulativeAreas.Dispose();
         }
+        
+        // Capture the currently animated pose
+        UpdateAnimatedVertices();
 
+        var updateJob = new UpdateAnimatedFormationTargetsJob
+        {
+            AnimatedVertices = animatedVertices,
+            Attachments = formationAttachments,
+            LocalTargets = formationTargetsLocal
+        };
+
+        updateJob.Schedule(agents.Count, 64).Complete();
+
+        // Initialize the previous targets from the same pose.
+        NativeArray<float3>.Copy(formationTargetsLocal, previousFormationTargetsLocal);
+        
         // Make sure displayed and sampled geometry match.
         previousFormationMatrix = ToFloat4x4(formationSkinnedRenderer.transform.localToWorldMatrix);
         formationActive = true;
-        
-        // deactivate colliders shortly to enable them quick forming
-        //SetAgentCollisions(false);
     }
     
     private void SetAgentCollisions(bool enabled)
@@ -549,34 +585,32 @@ public class LeaderManager : MonoBehaviour
             new float4(m.m03, m.m13, m.m23, m.m33)
         );
     }
-    
-    public void StartFormationByIndex(int index)
-    {
-        if (index < 0 || index >= formationMeshes.Count)
-        {
-            Debug.LogWarning("No formation mesh at list index " + index, this);
-            return;
-        }
-
-        StartFormation(formationMeshes[index]);
-    }
 
     public void ToggleFormation()
     {
         if (formationActive)
             StopFormation();
         else
-            StartFormationByIndex(0);
+            StartFormation();
     }
 
     public void StopFormation()
     {
         formationActive = false;
         
-        if(bakedMesh != null)
-            bakedMesh.Clear();
         if(animatedVertices.IsCreated) 
             animatedVertices.Dispose();
+        if(previousFormationTargetsLocal.IsCreated) 
+            previousFormationTargetsLocal.Dispose();
+
+        if (formationSkinnedRenderer != null)
+            DestroyFormationRenderer();
+
+        if (bakedMesh != null)
+        {
+            Destroy(bakedMesh);
+            bakedMesh = null;
+        }
     }
     
     private void FixedUpdate()
@@ -628,7 +662,9 @@ public class LeaderManager : MonoBehaviour
 
         handle.Complete(); // wait for Jobs to end to use results
         
-        
+        // Save this frame's targets for the next physics update
+        if (formationActive)
+            NativeArray<float3>.Copy(formationTargetsLocal, previousFormationTargetsLocal);
 
         for (int i = 0; i < agents.Count; i++)
         {
@@ -705,14 +741,14 @@ public class LeaderManager : MonoBehaviour
 
     private JobHandle ScheduleFormation(JobHandle dependency)
     {
-        float4x4 currentFormationMatrix = ToFloat4x4(formationMeshFilter.transform.localToWorldMatrix);
+        float4x4 currentFormationMatrix = ToFloat4x4(formationSkinnedRenderer.transform.localToWorldMatrix);
         
         var queryJob = new CalculateFormationForceJob()
         {
             Positions = positions,
             Velocities  = velocities,
             LocalTargets = formationTargetsLocal,
-            PreviousLocalTargets = ,
+            PreviousLocalTargets = previousFormationTargetsLocal,
             SteeringForces = steeringForces,
             CurrentLocalToWorld = currentFormationMatrix,
             PreviousLocalToWorld = previousFormationMatrix,
@@ -730,6 +766,7 @@ public class LeaderManager : MonoBehaviour
     
     private void OnDestroy()
     {
+        StopFormation();
         FreeData();
     }
 

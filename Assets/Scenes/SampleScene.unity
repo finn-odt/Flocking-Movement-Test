@@ -332,7 +332,8 @@ MonoBehaviour:
   splitLeaderPrefab: {fileID: 8106850857898139384, guid: dbc8fe1febe56804e8a3863fb279f0a4, type: 3}
   spawnRadius: 10
   spawnOnSphere: 0
-  numberOfAgents: 300
+  numberOfAgents: 400
+  formationMeshVisible: 1
   formationParentObj: {fileID: 841352250}
   formationPrefab: {fileID: 4585675092053332628, guid: b7fd6b118aa65f043a8b5f697d591b78, type: 3}
   formationMeshFilter: {fileID: 841352253}
@@ -1292,7 +1293,7 @@ Transform:
   m_GameObject: {fileID: 1538400902}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 3.69, y: -0.84, z: -0.18245}
+  m_LocalPosition: {x: 5, y: -1.7, z: -0.18245}
   m_LocalScale: {x: 3, y: 0.2, z: 4}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1404,7 +1405,7 @@ Transform:
   m_GameObject: {fileID: 1972915029}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.06, y: 2.74, z: -0.18245}
+  m_LocalPosition: {x: 4.47, y: 4.15, z: -0.18245}
   m_LocalScale: {x: 3, y: 0.2, z: 4}
   m_ConstrainProportionsScale: 0
   m_Children: []
